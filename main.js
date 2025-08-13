@@ -3,6 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const { spawn } = require('child_process');
 const fs = require('fs');
+require('dotenv').config(); // Load .env file
 
 // Import Solana dependencies
 const { 
@@ -20,24 +21,15 @@ const BN = require("bn.js");
 const bs58 = require("bs58");
 const FormData = require("form-data");
 
-// Store your private key here
-const WALLET_PRIVATE_KEY = "e"; // Replace with your actual private key
+// Load configuration from .env
+const WALLET_PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY || "YOUR_PRIVATE_KEY_HERE";
+const COIN_LOGOS_FOLDER = process.env.COIN_LOGOS_FOLDER || "C:/coin-logos";
+const RPC_ENDPOINT = process.env.RPC_ENDPOINT || "https://api.mainnet-beta.solana.com";
+const RPC_COMMITMENT = process.env.RPC_COMMITMENT || "processed";
+const GLOBAL_STATE_CACHE_MS = parseInt(process.env.GLOBAL_STATE_CACHE_MS) || 30000;
 
-// Coin logos folder path
-const COIN_LOGOS_FOLDER = "C:/Users/grubb/pfnew/token/green-coins"; // Change this to your folder path
-
-// Jito configuration
-const JITO_BLOCK_ENGINE_URL = "https://mainnet.block-engine.jito.wtf/api/v1/transactions";
-const JITO_TIP_ACCOUNTS = [
-  "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
-  "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
-  "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
-  "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
-  "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
-  "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
-  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
-  "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"
-];
+// Your Cloudflare Worker URL
+const CLOUDFLARE_WORKER_URL = 'https://workers-playground-bold-tooth-cee5.jake-98f.workers.dev';
 
 // Pre-initialized launcher components
 let connection;
@@ -45,7 +37,6 @@ let sdk;
 let wallet;
 let globalState;
 let globalStateTimestamp = 0;
-const GLOBAL_STATE_CACHE_MS = 30000;
 
 // Pre-compute common instructions
 const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
@@ -107,8 +98,8 @@ function initializeLauncher() {
         console.log(`✅ Wallet loaded: ${wallet.publicKey.toBase58()}`);
         
         // Initialize connection with optimized settings
-        connection = new Connection("https://api.mainnet-beta.solana.com", {
-            commitment: "processed",
+        connection = new Connection(RPC_ENDPOINT, {
+            commitment: RPC_COMMITMENT,
             confirmTransactionInitialTimeout: 30000
         });
         
@@ -135,6 +126,7 @@ function initializeLauncher() {
         }, GLOBAL_STATE_CACHE_MS);
         
         console.log('🚀 Fast launcher initialized');
+        console.log(`☁️ Using Cloudflare Worker: ${CLOUDFLARE_WORKER_URL}`);
     } catch (error) {
         console.error('Failed to initialize launcher:', error);
         console.error('Make sure you have set your private key correctly!');
@@ -189,6 +181,44 @@ ipcMain.handle('load-coin-logo', async (event, symbol) => {
     }
 });
 
+// Handle metadata test
+ipcMain.handle('test-metadata', async (event, testData) => {
+    try {
+        console.log('\n🧪 Testing metadata upload...');
+        const startTime = Date.now();
+        
+        const metadataUri = await uploadMetadata({
+            name: testData.name,
+            symbol: testData.symbol,
+            description: `${testData.name} - Test upload`,
+            imageUrl: testData.imageUrl,
+            twitter: testData.twitter || ""
+        }, testData.imageBuffer);
+        
+        const uploadTime = Date.now() - startTime;
+        const serverUsed = uploadTime < 200 ? 'Cloudflare Worker' : 'pump.fun';
+        
+        console.log(`✅ Test successful!`);
+        console.log(`📦 Metadata URI: ${metadataUri}`);
+        console.log(`⏱️ Upload time: ${uploadTime}ms`);
+        console.log(`🖥️ Server used: ${serverUsed}`);
+        
+        return {
+            success: true,
+            metadataUri,
+            uploadTime,
+            serverUsed
+        };
+        
+    } catch (error) {
+        console.error('Test failed:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
 // Handle window controls
 ipcMain.on('minimize-window', () => {
     mainWindow.minimize();
@@ -226,6 +256,7 @@ ipcMain.handle('download-image', async (event, url) => {
 // Handle token creation
 ipcMain.handle('create-token', async (event, tokenData) => {
     const startTime = Date.now();
+    const timings = {};
     
     try {
         // Check if wallet is initialized
@@ -241,11 +272,14 @@ ipcMain.handle('create-token', async (event, tokenData) => {
         console.log('Symbol:', tokenData.symbol);
         
         // Generate mint keypair immediately
+        const mintStart = Date.now();
         const mintKeypair = Keypair.generate();
         const tokenAddress = mintKeypair.publicKey.toBase58();
-        console.log('🪙 Token address:', tokenAddress);
+        timings.mintGeneration = Date.now() - mintStart;
+        console.log(`🪙 Token address: ${tokenAddress} (${timings.mintGeneration}ms)`);
         
         // Start metadata upload in parallel
+        const metadataStart = Date.now();
         const metadataPromise = uploadMetadata({
             name: tokenData.name,
             symbol: tokenData.symbol,
@@ -255,29 +289,33 @@ ipcMain.handle('create-token', async (event, tokenData) => {
         }, tokenData.imageBuffer);
         
         // Get cached global state
+        const globalStart = Date.now();
         const global = await getGlobalState();
         if (!global) {
             throw new Error("Failed to get global state");
         }
+        timings.globalState = Date.now() - globalStart;
+        console.log(`📊 Global state fetched (${timings.globalState}ms)`);
         
         // Calculate amounts
+        const calcStart = Date.now();
         const solAmount = new BN(tokenData.initialBuy * LAMPORTS_PER_SOL);
         const tokenAmount = getBuyTokenAmountFromSolAmount(global, null, solAmount);
+        timings.calculations = Date.now() - calcStart;
         
         // Wait for metadata
         const metadataUri = await metadataPromise;
-        console.log('📦 Metadata:', metadataUri);
+        timings.metadataUpload = Date.now() - metadataStart;
+        console.log(`📦 Metadata: ${metadataUri} (${timings.metadataUpload}ms)`);
         
-        // Build priority fee (70% of total fee)
-        const totalFeeSOL = tokenData.priorityFee;
-        const priorityFeeLamports = Math.floor(totalFeeSOL * 0.7 * LAMPORTS_PER_SOL);
-        const jitoTipLamports = Math.floor(totalFeeSOL * 0.3 * LAMPORTS_PER_SOL);
-        
+        // Build priority fee
+        const priorityFeeLamports = Math.floor(tokenData.priorityFee * LAMPORTS_PER_SOL);
         const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({
-            microLamports: Math.floor(priorityFeeLamports / 250_000 * 1_000_000), // Convert to microLamports per CU
+            microLamports: Math.floor(priorityFeeLamports / 250_000 * 1_000_000),
         });
         
         // Get instructions
+        const instructionsStart = Date.now();
         const instructions = await sdk.createAndBuyInstructions({
             global,
             mint: mintKeypair.publicKey,
@@ -289,73 +327,60 @@ ipcMain.handle('create-token', async (event, tokenData) => {
             amount: tokenAmount,
             solAmount: solAmount,
         });
+        timings.instructions = Date.now() - instructionsStart;
+        console.log(`📝 Instructions built (${timings.instructions}ms)`);
         
         // Build transaction
+        const txBuildStart = Date.now();
         const transaction = new Transaction()
             .add(computeBudgetIx)
             .add(priorityFeeIx)
             .add(...instructions);
         
-        // Add Jito tip as the LAST instruction (30% of total fee)
-        const tipAccount = JITO_TIP_ACCOUNTS[Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length)];
-        const tipInstruction = SystemProgram.transfer({
-            fromPubkey: wallet.publicKey,
-            toPubkey: new PublicKey(tipAccount),
-            lamports: jitoTipLamports,
-        });
-        transaction.add(tipInstruction);
-        
         // Get fresh blockhash
+        const blockhashStart = Date.now();
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('processed');
+        timings.blockhash = Date.now() - blockhashStart;
+        console.log(`🔗 Blockhash fetched (${timings.blockhash}ms)`);
+        
         transaction.recentBlockhash = blockhash;
         transaction.feePayer = wallet.publicKey;
         
         // Sign
+        const signStart = Date.now();
         transaction.sign(wallet, mintKeypair);
+        timings.signing = Date.now() - signStart;
+        timings.txBuild = Date.now() - txBuildStart;
         
-        // Send to Jito
-        console.log('📤 Sending via Jito...');
-        console.log(`💰 Priority fee: ${(priorityFeeLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL (70%)`);
-        console.log(`💰 Jito tip: ${(jitoTipLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL (30%)`);
+        // Send transaction via regular RPC only
+        console.log('📤 Sending transaction...');
+        console.log(`💰 Priority fee: ${(priorityFeeLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
         
-        let signature;
-        try {
-            // Try Jito first
-            const serialized = transaction.serialize();
-            const base64Tx = serialized.toString('base64');
-            
-            const jitoResponse = await axios.post(
-                JITO_BLOCK_ENGINE_URL,
-                {
-                    jsonrpc: "2.0",
-                    id: 1,
-                    method: "sendTransaction",
-                    params: [base64Tx]
-                },
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    timeout: 5000
-                }
-            );
-            
-            signature = jitoResponse.data.result;
-            console.log('✅ Sent via Jito block engine');
-        } catch (jitoError) {
-            console.log('⚠️ Jito failed, using regular RPC');
-            // Fallback to regular RPC
-            signature = await connection.sendRawTransaction(
-                transaction.serialize(),
-                {
-                    skipPreflight: true,
-                    preflightCommitment: 'processed'
-                }
-            );
-        }
+        const sendStart = Date.now();
+        const signature = await connection.sendRawTransaction(
+            transaction.serialize(),
+            {
+                skipPreflight: true,
+                preflightCommitment: 'processed'
+            }
+        );
+        timings.send = Date.now() - sendStart;
         
         const elapsed = Date.now() - startTime;
-        console.log(`✅ Sent in ${elapsed}ms!`);
+        
+        // Log timing breakdown
+        console.log('\n⏱️ Timing breakdown:');
+        console.log(`  Mint generation: ${timings.mintGeneration}ms`);
+        console.log(`  Global state: ${timings.globalState}ms`);
+        console.log(`  Calculations: ${timings.calculations}ms`);
+        console.log(`  Metadata upload: ${timings.metadataUpload}ms`);
+        console.log(`  Instructions: ${timings.instructions}ms`);
+        console.log(`  Blockhash: ${timings.blockhash}ms`);
+        console.log(`  TX build + sign: ${timings.txBuild}ms`);
+        console.log(`  Send: ${timings.send}ms`);
+        console.log(`  TOTAL: ${elapsed}ms`);
+        
+        console.log(`\n✅ Sent in ${elapsed}ms!`);
         console.log(`🔗 TX: https://solscan.io/tx/${signature}`);
         console.log(`📊 View: https://pump.fun/coin/${tokenAddress}`);
         
@@ -366,7 +391,8 @@ ipcMain.handle('create-token', async (event, tokenData) => {
             success: true, 
             tokenAddress,
             signature,
-            elapsed
+            elapsed,
+            timings
         };
         
     } catch (error) {
@@ -381,37 +407,96 @@ ipcMain.handle('create-token', async (event, tokenData) => {
 
 async function uploadMetadata(metadata, imageBuffer) {
     try {
-        const formData = new FormData();
+        // Image should already be uploaded via the frontend (letsbonk proxy)
+        let imageUrl = metadata.imageUrl;
         
-        // Use the image buffer passed from UI
-        if (imageBuffer) {
-            const buffer = Buffer.from(imageBuffer);
-            formData.append("file", buffer, {
-                filename: "image.png",
-                contentType: "image/png"
+        // If no image URL but we have buffer, upload it via proxy
+        if (!imageUrl && imageBuffer) {
+            console.log('📤 Uploading image via proxy...');
+            const formData = new FormData();
+            formData.append('image', Buffer.from(imageBuffer), {
+                filename: 'image.jpg',
+                contentType: 'image/jpeg'
             });
-        } else {
-            throw new Error("No image buffer provided");
+            
+            const imageResponse = await axios.post(
+                'https://nft-storage.letsbonk22.workers.dev/upload/img',
+                formData,
+                {
+                    headers: formData.getHeaders(),
+                    timeout: 10000
+                }
+            );
+            
+            imageUrl = imageResponse.data;
+            console.log(`✅ Image uploaded: ${imageUrl}`);
         }
         
-        // Append metadata fields
-        formData.append("name", metadata.name);
-        formData.append("symbol", metadata.symbol);
-        formData.append("description", metadata.description);
-        formData.append("twitter", metadata.twitter || "");
-        formData.append("telegram", "");
-        formData.append("website", "");
-        formData.append("showName", "true");
+        // Create the metadata object
+        const fullMetadata = {
+            name: metadata.name,
+            symbol: metadata.symbol,
+            description: metadata.description,
+            image: imageUrl,
+            showName: true,
+            createdOn: "https://pump.fun",
+            twitter: metadata.twitter || undefined
+        };
         
-        const response = await axios.post('https://pump.fun/api/ipfs', formData, {
-            headers: {
-                ...formData.getHeaders(),
-                'Content-Type': 'multipart/form-data'
-            },
-            timeout: 15000
+        // Remove undefined fields
+        Object.keys(fullMetadata).forEach(key => {
+            if (fullMetadata[key] === undefined) delete fullMetadata[key];
         });
         
-        return response.data.metadataUri;
+        // Upload to Cloudflare Worker for INSTANT speed
+        console.log('☁️ Uploading metadata to Cloudflare Worker...');
+        const metadataStart = Date.now();
+        
+        try {
+            const response = await axios.post(
+                `${CLOUDFLARE_WORKER_URL}/upload`,
+                fullMetadata,
+                {
+                    headers: { 'Content-Type': 'application/json' },
+                    timeout: 3000 // Fast timeout for edge network
+                }
+            );
+            
+            const metadataUrl = response.data.metadataUri;
+            console.log(`✅ Metadata uploaded in ${Date.now() - metadataStart}ms`);
+            console.log(`📦 Metadata URL: ${metadataUrl}`);
+            
+            return metadataUrl;
+            
+        } catch (workerError) {
+            console.log('⚠️ Worker failed, falling back to pump.fun IPFS...');
+            
+            // Fallback to pump.fun's IPFS
+            const formData = new FormData();
+            
+            if (imageBuffer) {
+                formData.append("file", Buffer.from(imageBuffer), {
+                    filename: "image.png",
+                    contentType: "image/png"
+                });
+            }
+            
+            formData.append("name", metadata.name);
+            formData.append("symbol", metadata.symbol);
+            formData.append("description", metadata.description);
+            formData.append("twitter", metadata.twitter || "");
+            formData.append("telegram", "");
+            formData.append("website", "");
+            formData.append("showName", "true");
+            
+            const response = await axios.post('https://pump.fun/api/ipfs', formData, {
+                headers: formData.getHeaders(),
+                timeout: 15000
+            });
+            
+            return response.data.metadataUri;
+        }
+        
     } catch (error) {
         console.error("Metadata upload error:", error);
         throw error;

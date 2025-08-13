@@ -337,6 +337,30 @@
             box-shadow: none;
         }
 
+        /* Test Button */
+        .test-btn {
+            padding: 12px;
+            background: #666;
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+
+        .test-btn:hover {
+            background: #777;
+        }
+
+        .test-btn:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+        }
+
         /* Status */
         .status {
             position: fixed;
@@ -451,6 +475,7 @@
             </div>
 
             <button class="create-btn" id="createBtn" onclick="createToken()">Create Token</button>
+            <button class="test-btn" id="testBtn" onclick="testMetadata()">Test Metadata Upload</button>
         </div>
     </div>
 
@@ -491,11 +516,37 @@
             e.preventDefault();
             dropZone.classList.remove('dragover');
             
-            // Handle Discord image URLs
+            // Get the dropped data
             const text = e.dataTransfer.getData('text/plain');
-            if (text && (text.includes('http') || text.includes('https'))) {
-                handleImageUrl(text);
+            const urlText = e.dataTransfer.getData('text/uri-list');
+            const htmlText = e.dataTransfer.getData('text/html');
+            
+            // Check if it's a Twitter/X link
+            const twitterRegex = /https?:\/\/(twitter\.com|x\.com)\/[^\s]+/i;
+            const droppedText = text || urlText;
+            
+            if (droppedText && twitterRegex.test(droppedText)) {
+                // It's a Twitter link - fill the Twitter field
+                document.getElementById('twitter').value = droppedText.trim();
+                updateStatus('Twitter link detected and added', 'success');
+                
+                // Flash the Twitter input to show it was filled
+                const twitterInput = document.getElementById('twitter');
+                twitterInput.style.transition = 'background-color 0.3s';
+                twitterInput.style.backgroundColor = '#00d4ff20';
+                setTimeout(() => {
+                    twitterInput.style.backgroundColor = '';
+                }, 500);
                 return;
+            }
+            
+            // Handle Discord image URLs
+            if (droppedText && (droppedText.includes('http') || droppedText.includes('https'))) {
+                // Check if it's an image URL (not Twitter)
+                if (!twitterRegex.test(droppedText)) {
+                    handleImageUrl(droppedText);
+                    return;
+                }
             }
             
             // Handle file drops
@@ -545,35 +596,83 @@
             reader.readAsDataURL(file);
         }
 
+        // In your index.html, replace the uploadImageToIPFS function with this:
+
         async function uploadImageToIPFS(imageData) {
             isUploading = true;
-            updateStatus('Uploading to IPFS...', 'loading');
+            updateStatus('Uploading image to NFT Storage...', 'loading');
             
             try {
-                const formData = new FormData();
-                if (imageData instanceof File) {
-                    formData.append('image', imageData);
-                } else {
-                    formData.append('image', new Blob([imageData]), 'image.jpg');
+                // GET YOUR API KEY FROM MAIN PROCESS
+                const NFT_STORAGE_KEY = await ipcRenderer.invoke('get-nft-storage-key');
+                
+                if (!NFT_STORAGE_KEY || NFT_STORAGE_KEY === 'YOUR_NFT_STORAGE_KEY') {
+                    throw new Error('NFT Storage API key not configured');
                 }
                 
-                const response = await fetch('https://nft-storage.letsbonk22.workers.dev/upload/img', {
+                const formData = new FormData();
+                if (imageData instanceof File) {
+                    formData.append('file', imageData);
+                } else {
+                    formData.append('file', new Blob([imageData]), 'image.png');
+                }
+                
+                console.log('Uploading to NFT Storage...');
+                const response = await fetch('https://api.nft.storage/upload', {
                     method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${NFT_STORAGE_KEY}`
+                    },
                     body: formData
                 });
                 
+                console.log('Response status:', response.status);
+                
                 if (response.ok) {
-                    uploadedImageUrl = await response.text();
-                    updateStatus('Image uploaded', 'success');
+                    const data = await response.json();
+                    console.log('Upload response:', data);
+                    uploadedImageUrl = `https://nftstorage.link/ipfs/${data.value.cid}`;
+                    updateStatus('Image uploaded to IPFS', 'success');
+                    console.log('Image URL:', uploadedImageUrl);
                 } else {
-                    throw new Error('Upload failed');
+                    const errorText = await response.text();
+                    console.error('Upload failed:', response.status, errorText);
+                    throw new Error(`Upload failed: ${response.status}`);
                 }
             } catch (error) {
-                updateStatus('IPFS upload failed', 'error');
+                console.error('Upload error:', error);
+                updateStatus(`Upload failed: ${error.message}`, 'error');
+                
+                // FALLBACK to the working letsbonk proxy if NFT Storage fails
+                console.log('Falling back to proxy upload...');
+                try {
+                    const formData = new FormData();
+                    if (imageData instanceof File) {
+                        formData.append('image', imageData);
+                    } else {
+                        formData.append('image', new Blob([imageData]), 'image.jpg');
+                    }
+                    
+                    const response = await fetch('https://nft-storage.letsbonk22.workers.dev/upload/img', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        uploadedImageUrl = await response.text();
+                        updateStatus('Image uploaded (via proxy)', 'success');
+                    } else {
+                        throw new Error('Proxy upload also failed');
+                    }
+                } catch (proxyError) {
+                    updateStatus('All upload methods failed', 'error');
+                }
             } finally {
                 isUploading = false;
             }
         }
+
+// ADD THIS TO YOUR main.js to provide the API key to the renderer:
 
         // ASCII Art
         document.getElementById('useAsciiBtn').addEventListener('click', () => {
@@ -647,282 +746,6 @@
             });
         }
 
-        function generateSimpleAscii(text) {
-            // Using slant font style ASCII art
-            const slantPatterns = {
-                'A': [
-                    '    ___   ',
-                    '   /   \\  ',
-                    '  / /_\\ \\ ',
-                    ' / _____ \\',
-                    '/_/     \\_\\'
-                ],
-                'B': [
-                    ' ____  ',
-                    '| __ ) ',
-                    '|  _ \\ ',
-                    '| |_) |',
-                    '|____/ '
-                ],
-                'C': [
-                    '  ____ ',
-                    ' / ___|',
-                    '| |    ',
-                    '| |___ ',
-                    ' \\____|'
-                ],
-                'D': [
-                    ' ____  ',
-                    '|  _ \\ ',
-                    '| | | |',
-                    '| |_| |',
-                    '|____/ '
-                ],
-                'E': [
-                    ' _____ ',
-                    '| ____|',
-                    '|  _|  ',
-                    '| |___ ',
-                    '|_____|'
-                ],
-                'F': [
-                    ' _____ ',
-                    '|  ___|',
-                    '| |_   ',
-                    '|  _|  ',
-                    '|_|    '
-                ],
-                'G': [
-                    '  ____ ',
-                    ' / ___|',
-                    '| |  _ ',
-                    '| |_| |',
-                    ' \\____|'
-                ],
-                'H': [
-                    ' _   _ ',
-                    '| | | |',
-                    '| |_| |',
-                    '|  _  |',
-                    '|_| |_|'
-                ],
-                'I': [
-                    ' ___ ',
-                    '|_ _|',
-                    ' | | ',
-                    ' | | ',
-                    '|___|'
-                ],
-                'J': [
-                    '     _ ',
-                    '    | |',
-                    ' _  | |',
-                    '| |_| |',
-                    ' \\___/ '
-                ],
-                'K': [
-                    ' _  __',
-                    '| |/ /',
-                    "| ' / ",
-                    '| . \\ ',
-                    '|_|\\_\\'
-                ],
-                'L': [
-                    ' _     ',
-                    '| |    ',
-                    '| |    ',
-                    '| |___ ',
-                    '|_____|'
-                ],
-                'M': [
-                    ' __  __ ',
-                    '|  \\/  |',
-                    '| |\\/| |',
-                    '| |  | |',
-                    '|_|  |_|'
-                ],
-                'N': [
-                    ' _   _ ',
-                    '| \\ | |',
-                    '|  \\| |',
-                    '| |\\  |',
-                    '|_| \\_|'
-                ],
-                'O': [
-                    '  ___  ',
-                    ' / _ \\ ',
-                    '| | | |',
-                    '| |_| |',
-                    ' \\___/ '
-                ],
-                'P': [
-                    ' ____  ',
-                    '|  _ \\ ',
-                    '| |_) |',
-                    '|  __/ ',
-                    '|_|    '
-                ],
-                'Q': [
-                    '  ___  ',
-                    ' / _ \\ ',
-                    '| | | |',
-                    '| |_| |',
-                    ' \\__\\_\\'
-                ],
-                'R': [
-                    ' ____  ',
-                    '|  _ \\ ',
-                    '| |_) |',
-                    '|  _ < ',
-                    '|_| \\_\\'
-                ],
-                'S': [
-                    ' ____  ',
-                    '/ ___| ',
-                    '\\___ \\ ',
-                    ' ___) |',
-                    '|____/ '
-                ],
-                'T': [
-                    ' _____ ',
-                    '|_   _|',
-                    '  | |  ',
-                    '  | |  ',
-                    '  |_|  '
-                ],
-                'U': [
-                    ' _   _ ',
-                    '| | | |',
-                    '| | | |',
-                    '| |_| |',
-                    ' \\___/ '
-                ],
-                'V': [
-                    '__     __',
-                    '\\ \\   / /',
-                    ' \\ \\ / / ',
-                    '  \\ V /  ',
-                    '   \\_/   '
-                ],
-                'W': [
-                    '__        __',
-                    '\\ \\      / /',
-                    ' \\ \\ /\\ / / ',
-                    '  \\ V  V /  ',
-                    '   \\_/\\_/   '
-                ],
-                'X': [
-                    '__  __',
-                    '\\ \\/ /',
-                    ' \\  / ',
-                    ' /  \\ ',
-                    '/_/\\_\\'
-                ],
-                'Y': [
-                    '__   __',
-                    '\\ \\ / /',
-                    ' \\ V / ',
-                    '  | |  ',
-                    '  |_|  '
-                ],
-                'Z': [
-                    ' _____',
-                    '|__  /',
-                    '  / / ',
-                    ' / /_ ',
-                    '/____|'
-                ],
-                '0': [
-                    '  ___  ',
-                    ' / _ \\ ',
-                    '| | | |',
-                    '| |_| |',
-                    ' \\___/ '
-                ],
-                '1': [
-                    ' _ ',
-                    '/ |',
-                    '| |',
-                    '| |',
-                    '|_|'
-                ],
-                '2': [
-                    ' ____  ',
-                    '|___ \\ ',
-                    '  __) |',
-                    ' / __/ ',
-                    '|_____|'
-                ],
-                '3': [
-                    ' _____ ',
-                    '|___ / ',
-                    '  |_ \\ ',
-                    ' ___) |',
-                    '|____/ '
-                ],
-                '4': [
-                    ' _  _   ',
-                    '| || |  ',
-                    '| || |_ ',
-                    '|__   _|',
-                    '   |_|  '
-                ],
-                '5': [
-                    ' ____  ',
-                    '| ___| ',
-                    '|___ \\ ',
-                    ' ___) |',
-                    '|____/ '
-                ],
-                '6': [
-                    '  __   ',
-                    ' / /_  ',
-                    "| '_ \\ ",
-                    '| (_) |',
-                    ' \\___/ '
-                ],
-                '7': [
-                    ' _____ ',
-                    '|___  |',
-                    '   / / ',
-                    '  / /  ',
-                    ' /_/   '
-                ],
-                '8': [
-                    '  ___  ',
-                    ' ( _ ) ',
-                    ' / _ \\ ',
-                    '| (_) |',
-                    ' \\___/ '
-                ],
-                '9': [
-                    '  ___  ',
-                    ' / _ \\ ',
-                    '| (_) |',
-                    ' \\__, |',
-                    '   /_/ '
-                ]
-            };
-            
-            const chars = text.toUpperCase().split('');
-            let art = '\n';
-            
-            // Build ASCII art line by line
-            for (let row = 0; row < 5; row++) {
-                let line = '';
-                for (let char of chars) {
-                    if (slantPatterns[char]) {
-                        line += slantPatterns[char][row];
-                    } else {
-                        line += '     '; // Space for unknown characters
-                    }
-                }
-                art += line + '\n';
-            }
-            
-            return art;
-        }
-
         async function convertAsciiToImage(asciiText) {
             updateStatus('Converting ASCII to image...', 'loading');
             
@@ -987,6 +810,76 @@
                 }
             } catch (error) {
                 updateStatus('Cannot access clipboard', 'error');
+            }
+        }
+
+        // Test metadata upload
+        async function testMetadata() {
+            const name = document.getElementById('tokenName').value.trim();
+            const symbol = document.getElementById('tokenSymbol').value.trim().toUpperCase();
+            
+            if (!name || !symbol) {
+                alert('Enter token name and symbol');
+                return;
+            }
+            
+            if (!uploadedImageUrl && !isUploading) {
+                alert('Add an image or use ASCII');
+                return;
+            }
+            
+            // Wait for upload if in progress
+            if (isUploading) {
+                updateStatus('Waiting for image upload...', 'loading');
+                while (isUploading) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            const testBtn = document.getElementById('testBtn');
+            testBtn.disabled = true;
+            updateStatus('Testing metadata upload...', 'loading');
+            
+            try {
+                // Prepare image data
+                let imageBuffer = null;
+                if (selectedImage) {
+                    imageBuffer = await selectedImage.arrayBuffer();
+                } else if (useAscii) {
+                    const canvas = document.querySelector('canvas');
+                    if (canvas) {
+                        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                        imageBuffer = await blob.arrayBuffer();
+                    }
+                }
+                
+                const testData = {
+                    name,
+                    symbol,
+                    imageUrl: uploadedImageUrl,
+                    imageBuffer: imageBuffer ? Array.from(new Uint8Array(imageBuffer)) : null,
+                    twitter: document.getElementById('twitter').value.trim()
+                };
+                
+                const result = await ipcRenderer.invoke('test-metadata', testData);
+                
+                if (result.success) {
+                    updateStatus(`✅ Metadata test successful! ${result.metadataUri}`, 'success');
+                    console.log('Test results:', result);
+                    
+                    // Copy metadata URL to clipboard
+                    navigator.clipboard.writeText(result.metadataUri);
+                    
+                    // Show alert with results
+                    alert(`Metadata Upload Test Success!\n\nMetadata URL: ${result.metadataUri}\nUpload time: ${result.uploadTime}ms\nServer used: ${result.serverUsed}\n\nURL copied to clipboard!`);
+                } else {
+                    updateStatus('Metadata test failed', 'error');
+                    alert(`Test failed: ${result.error}`);
+                }
+            } catch (error) {
+                updateStatus('Error testing metadata', 'error');
+            } finally {
+                testBtn.disabled = false;
             }
         }
 
@@ -1088,95 +981,6 @@
             statusText.textContent = text;
         }
 
-        function generateCoinLogo(symbol) {
-            useAscii = false;
-            dropZone.classList.remove('has-ascii');
-            dropZone.classList.add('has-image');
-            
-            updateStatus('Generating coin logo...', 'loading');
-            
-            // Create canvas
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            
-            // Set size
-            canvas.width = 400;
-            canvas.height = 400;
-            
-            // White background
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Green circle
-            const centerX = canvas.width / 2;
-            const centerY = canvas.height / 2;
-            const radius = 160; // 80% of canvas
-            
-            ctx.fillStyle = '#4CAF50'; // Material green
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
-            ctx.fill();
-            
-            // Get first letter
-            const letter = symbol.charAt(0);
-            
-            // Set up text
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = 'bold 180px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            // Measure text to position vertical lines properly
-            const metrics = ctx.measureText(letter);
-            const textWidth = metrics.width;
-            
-            // Draw the letter
-            ctx.fillText(letter, centerX, centerY);
-            
-            // Add vertical lines (Bitcoin style)
-            ctx.strokeStyle = '#FFFFFF';
-            ctx.lineWidth = 12;
-            
-            // Left vertical line
-            const lineOffset = textWidth * 0.3;
-            const lineHeight = 60;
-            
-            // Top part of left line
-            ctx.beginPath();
-            ctx.moveTo(centerX - lineOffset, centerY - 90);
-            ctx.lineTo(centerX - lineOffset, centerY - 90 - lineHeight);
-            ctx.stroke();
-            
-            // Bottom part of left line
-            ctx.beginPath();
-            ctx.moveTo(centerX - lineOffset, centerY + 90);
-            ctx.lineTo(centerX - lineOffset, centerY + 90 + lineHeight);
-            ctx.stroke();
-            
-            // Right vertical line
-            // Top part of right line
-            ctx.beginPath();
-            ctx.moveTo(centerX + lineOffset, centerY - 90);
-            ctx.lineTo(centerX + lineOffset, centerY - 90 - lineHeight);
-            ctx.stroke();
-            
-            // Bottom part of right line
-            ctx.beginPath();
-            ctx.moveTo(centerX + lineOffset, centerY + 90);
-            ctx.lineTo(centerX + lineOffset, centerY + 90 + lineHeight);
-            ctx.stroke();
-            
-            // Convert to data URL for preview
-            const dataUrl = canvas.toDataURL('image/png');
-            preview.src = dataUrl;
-            preview.style.display = 'block';
-            
-            // Convert to blob and upload
-            canvas.toBlob(async (blob) => {
-                uploadImageToIPFS(blob);
-            }, 'image/png');
-        }
-
         // Window controls
         function minimizeWindow() {
             ipcRenderer.send('minimize-window');
@@ -1189,6 +993,39 @@
         // Auto uppercase symbol
         document.getElementById('tokenSymbol').addEventListener('input', (e) => {
             e.target.value = e.target.value.toUpperCase();
+        });
+        
+        // Global drag and drop for Twitter links
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault();
+        });
+        
+        document.addEventListener('drop', (e) => {
+            // Only handle drops outside of the drop zone
+            if (!dropZone.contains(e.target)) {
+                e.preventDefault();
+                
+                const text = e.dataTransfer.getData('text/plain');
+                const urlText = e.dataTransfer.getData('text/uri-list');
+                const droppedText = text || urlText;
+                
+                // Check if it's a Twitter/X link
+                const twitterRegex = /https?:\/\/(twitter\.com|x\.com)\/[^\s]+/i;
+                
+                if (droppedText && twitterRegex.test(droppedText)) {
+                    // Fill the Twitter field
+                    document.getElementById('twitter').value = droppedText.trim();
+                    updateStatus('Twitter link added', 'success');
+                    
+                    // Flash the Twitter input
+                    const twitterInput = document.getElementById('twitter');
+                    twitterInput.style.transition = 'background-color 0.3s';
+                    twitterInput.style.backgroundColor = '#00d4ff20';
+                    setTimeout(() => {
+                        twitterInput.style.backgroundColor = '';
+                    }, 500);
+                }
+            }
         });
     </script>
 </body>
